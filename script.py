@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import tflite_runtime.interpreter as tflite
-from picamera2 import Picamera2
+import subprocess
 
 # ===============================
 # CONFIG
@@ -11,6 +11,9 @@ MODEL_PATH = "speedtraficdetectionmodel_6classes.tflite"
 IMG_SIZE = 30
 SEUIL_CONFIANCE = 0.90
 CLASSES = ['20', '30', '50', '60', '70', 'STOP']
+
+# Camera resolution
+WIDTH, HEIGHT = 640, 480
 
 # ===============================
 # LOAD TFLITE MODEL
@@ -47,15 +50,24 @@ def predict_tflite(img_input):
     return preds
 
 # ===============================
-# RASPBERRY PI CAMERA INIT
+# CAMERA INIT USING LIBCAMERA
 # ===============================
-picam2 = Picamera2()
-picam2.configure(
-    picam2.create_preview_configuration(
-        main={"format": "RGB888", "size": (640, 480)}
-    )
-)
-picam2.start()
+# libcamera-vid outputs MJPEG stream to stdout
+command = [
+    "libcamera-vid",
+    "-t", "0",  # run indefinitely
+    "--inline",
+    "--codec", "mjpeg",
+    "-o", "-"  # output to stdout
+]
+
+pipe = subprocess.Popen(command, stdout=subprocess.PIPE, bufsize=10**8)
+
+# MJPEG decoding using OpenCV VideoCapture from buffer
+cap = cv2.VideoCapture(pipe.stdout, cv2.CAP_FFMPEG)  # requires OpenCV built with FFMPEG
+if not cap.isOpened():
+    print("❌ Cannot open libcamera stream")
+    exit()
 
 print("🎥 Raspberry Pi Camera active — Q to quit")
 
@@ -63,12 +75,11 @@ print("🎥 Raspberry Pi Camera active — Q to quit")
 # CAMERA LOOP
 # ===============================
 while True:
-    frame_rgb = picam2.capture_array()
+    ret, frame = cap.read()
+    if not ret:
+        continue
 
-    # Convert RGB → BGR for OpenCV
-    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     output = frame.copy()
-
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
     # Red mask
@@ -109,7 +120,7 @@ while True:
                 2
             )
 
-        except Exception as e:
+        except:
             pass
 
     cv2.imshow("TFLite Traffic Sign Detection", output)
@@ -117,5 +128,6 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
+cap.release()
+pipe.terminate()
 cv2.destroyAllWindows()
-picam2.stop()
