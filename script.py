@@ -7,7 +7,7 @@ import subprocess
 # ===============================
 # CONFIG
 # ===============================
-MODEL_PATH = "speedtraficdetectionmodel_6classes.tflite"
+MODEL_PATH = "speedtraficdetectionmodel_6classes_fp16.tflite"
 IMG_SIZE = 30
 SEUIL_CONFIANCE = 0.90
 CLASSES = ['20', '30', '50', '60', '70', 'STOP']
