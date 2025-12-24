@@ -1,0 +1,123 @@
+import cv2
+import numpy as np
+from PIL import Image
+import tflite_runtime.interpreter as tflite
+import os
+
+# ===============================
+# CONFIG
+# ===============================
+MODEL_PATH = "speedtraficdetectionmodel_6classes.tflite"
+IMG_SIZE = 30
+SEUIL_CONFIANCE = 0.90
+CLASSES = ['20', '30', '50', '60', '70', 'STOP']
+
+# Camera resolution (smaller for 1GB Pi)
+WIDTH, HEIGHT = 320, 240
+
+# Minimum contour area for detection (dynamic)
+MIN_CONTOUR_AREA = 100  # small, so small signs are detected
+
+# Output folder if headless
+OUTPUT_FOLDER = "frames"
+os.makedirs(OUTPUT_FOLDER, exist_ok=True)
+
+# ===============================
+# LOAD TFLITE MODEL
+# ===============================
+interpreter = tflite.Interpreter(model_path=MODEL_PATH)
+interpreter.allocate_tensors()
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+print("✅ TFLite model loaded")
+
+# ===============================
+# PREPROCESS FUNCTION
+# ===============================
+def preprocess_roi(roi_bgr):
+    if roi_bgr.size == 0:
+        return None
+    roi_gray = cv2.cvtColor(roi_bgr, cv2.COLOR_BGR2GRAY)
+    img = Image.fromarray(roi_gray).resize((IMG_SIZE, IMG_SIZE))
+    img_array = np.expand_dims(np.expand_dims(np.array(img, dtype="float32") / 255.0, axis=-1), axis=0)
+    return img_array
+
+# ===============================
+# PREDICTION FUNCTION
+# ===============================
+def predict_tflite(img_input):
+    interpreter.set_tensor(input_details[0]['index'], img_input)
+    interpreter.invoke()
+    preds = interpreter.get_tensor(output_details[0]['index'])[0]
+    return preds
+
+# ===============================
+# CAMERA INIT (V4L2 CSI CAMERA)
+# ===============================
+cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+
+if not cap.isOpened():
+    print("❌ Cannot open camera. Did you run `sudo modprobe bcm2835-v4l2`?")
+    exit()
+
+HEADLESS = "DISPLAY" not in os.environ
+if HEADLESS:
+    print("⚠ Headless mode detected — saving frames to disk")
+else:
+    print(f"🎥 CSI Camera active — resolution {WIDTH}x{HEIGHT} — Press Q to quit")
+
+# ===============================
+# CAMERA LOOP
+# ===============================
+frame_count = 0
+while True:
+    ret, frame = cap.read()
+    if not ret:
+        continue
+
+    output = frame.copy()
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+    # Red mask (for traffic signs)
+    lower_red1 = np.array([0, 120, 70])
+    upper_red1 = np.array([10, 255, 255])
+    lower_red2 = np.array([170, 120, 70])
+    upper_red2 = np.array([180, 255, 255])
+    mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    for cnt in contours:
+        if cv2.contourArea(cnt) < MIN_CONTOUR_AREA:
+            continue
+
+        x, y, w, h = cv2.boundingRect(cnt)
+        roi = frame[y:y+h, x:x+w]
+        img_input = preprocess_roi(roi)
+        if img_input is None:
+            continue
+
+        try:
+            preds = predict_tflite(img_input)
+            cls_idx = np.argmax(preds)
+            confidence = preds[cls_idx]
+            label = CLASSES[cls_idx] if confidence >= SEUIL_CONFIANCE else "INCERTAIN"
+
+            cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
+            cv2.putText(output, f"{label} ({confidence*100:.1f}%)", (x, y-10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+        except Exception as e:
+            pass
+
+    if HEADLESS:
+        cv2.imwrite(f"{OUTPUT_FOLDER}/frame_{frame_count:04d}.jpg", output)
+        frame_count += 1
+    else:
+        cv2.imshow("TFLite Traffic Sign Detection", output)
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+cap.release()
+cv2.destroyAllWindows()
