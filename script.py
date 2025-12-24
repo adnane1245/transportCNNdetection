@@ -2,6 +2,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import tflite_runtime.interpreter as tflite
+from picamera2 import Picamera2
 
 # ===============================
 # CONFIG
@@ -46,17 +47,28 @@ def predict_tflite(img_input):
     return preds
 
 # ===============================
-# CAMERA LOOP (same logic)
+# RASPBERRY PI CAMERA INIT
 # ===============================
-cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-print("🎥 Camera active — Q to quit")
+picam2 = Picamera2()
+picam2.configure(
+    picam2.create_preview_configuration(
+        main={"format": "RGB888", "size": (640, 480)}
+    )
+)
+picam2.start()
 
+print("🎥 Raspberry Pi Camera active — Q to quit")
+
+# ===============================
+# CAMERA LOOP
+# ===============================
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    frame_rgb = picam2.capture_array()
 
+    # Convert RGB → BGR for OpenCV
+    frame = cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
     output = frame.copy()
+
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
     # Red mask
@@ -87,15 +99,17 @@ while True:
             label = CLASSES[cls_idx] if confidence >= SEUIL_CONFIANCE else "INCERTAIN"
 
             cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.putText(output,
-                        f"{label} ({confidence*100:.1f}%)",
-                        (x, y - 10),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 255, 0),
-                        2)
+            cv2.putText(
+                output,
+                f"{label} ({confidence*100:.1f}%)",
+                (x, y - 10),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.8,
+                (0, 255, 0),
+                2
+            )
 
-        except:
+        except Exception as e:
             pass
 
     cv2.imshow("TFLite Traffic Sign Detection", output)
@@ -103,5 +117,5 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-cap.release()
 cv2.destroyAllWindows()
+picam2.stop()
