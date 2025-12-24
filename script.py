@@ -2,18 +2,17 @@ import cv2
 import numpy as np
 from PIL import Image
 import tflite_runtime.interpreter as tflite
-import subprocess
 
 # ===============================
 # CONFIG
 # ===============================
-MODEL_PATH = "speedtraficdetectionmodel_6classes_fp16.tflite"
+MODEL_PATH = "speedtraficdetectionmodel_6classes.tflite"
 IMG_SIZE = 30
 SEUIL_CONFIANCE = 0.90
 CLASSES = ['20', '30', '50', '60', '70', 'STOP']
 
-# Camera resolution
-WIDTH, HEIGHT = 640, 480
+# Camera resolution (reduce for 1GB Pi if needed)
+WIDTH, HEIGHT = 320, 240
 
 # ===============================
 # LOAD TFLITE MODEL
@@ -50,26 +49,24 @@ def predict_tflite(img_input):
     return preds
 
 # ===============================
-# CAMERA INIT USING LIBCAMERA
+# ENABLE V4L2 FOR CSI CAMERA
 # ===============================
-# libcamera-vid outputs MJPEG stream to stdout
-command = [
-    "libcamera-vid",
-    "-t", "0",  # run indefinitely
-    "--inline",
-    "--codec", "mjpeg",
-    "-o", "-"  # output to stdout
-]
+# Make sure CSI camera is detected as /dev/video0
+# Run once: sudo modprobe bcm2835-v4l2
+# To make persistent at boot: echo "bcm2835-v4l2" | sudo tee -a /etc/modules
 
-pipe = subprocess.Popen(command, stdout=subprocess.PIPE, bufsize=10**8)
+# ===============================
+# CAMERA INIT
+# ===============================
+cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
 
-# MJPEG decoding using OpenCV VideoCapture from buffer
-cap = cv2.VideoCapture(pipe.stdout, cv2.CAP_FFMPEG)  # requires OpenCV built with FFMPEG
 if not cap.isOpened():
-    print("❌ Cannot open libcamera stream")
+    print("❌ Cannot open camera")
     exit()
 
-print("🎥 Raspberry Pi Camera active — Q to quit")
+print(f"🎥 CSI Camera active at resolution {WIDTH}x{HEIGHT} — Press Q to quit")
 
 # ===============================
 # CAMERA LOOP
@@ -94,7 +91,7 @@ while True:
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
     for cnt in contours:
-        if cv2.contourArea(cnt) < 2000:
+        if cv2.contourArea(cnt) < 500:  # reduced area for smaller resolution
             continue
 
         x, y, w, h = cv2.boundingRect(cnt)
@@ -115,7 +112,7 @@ while True:
                 f"{label} ({confidence*100:.1f}%)",
                 (x, y - 10),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.8,
+                0.6,
                 (0, 255, 0),
                 2
             )
@@ -129,5 +126,4 @@ while True:
         break
 
 cap.release()
-pipe.terminate()
 cv2.destroyAllWindows()
