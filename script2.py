@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 from PIL import Image
 import tflite_runtime.interpreter as tflite
-import os
+import subprocess
 
 # ===============================
 # CONFIG
@@ -11,11 +11,8 @@ MODEL_PATH = "speedtraficdetectionmodel_6classes.tflite"
 IMG_SIZE = 30
 SEUIL_CONFIANCE = 0.90
 CLASSES = ['20', '30', '50', '60', '70', 'STOP']
-
 WIDTH, HEIGHT = 320, 240
 MIN_CONTOUR_AREA = 100
-OUTPUT_FOLDER = "frames"
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # ===============================
 # LOAD TFLITE MODEL
@@ -47,78 +44,69 @@ def predict_tflite(img_input):
     return preds
 
 # ===============================
-# CAMERA INIT
+# LIBCAMERA-VID INIT
 # ===============================
-cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+command = [
+    "libcamera-vid",
+    "-t", "0",
+    "--inline",
+    "--codec", "mjpeg",
+    "-o", "-"
+]
+pipe = subprocess.Popen(command, stdout=subprocess.PIPE, bufsize=10**8)
 
-if not cap.isOpened():
-    print("❌ Cannot open camera. Did you run `sudo modprobe bcm2835-v4l2`?")
-    exit()
+print("🎥 Camera active — Press Ctrl+C to quit")
 
-HEADLESS = "DISPLAY" not in os.environ
-if HEADLESS:
-    print("⚠ Headless mode detected — saving frames to disk")
-else:
-    print(f"🎥 CSI Camera active — resolution {WIDTH}x{HEIGHT} — Press Q to quit")
-
-# ===============================
-# CAMERA LOOP
-# ===============================
-frame_count = 0
+data = b''
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        continue
-
-    output = frame.copy()
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    # Red mask for traffic signs
-    lower_red1 = np.array([0, 120, 70])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 120, 70])
-    upper_red2 = np.array([180, 255, 255])
-    mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    for cnt in contours:
-        if cv2.contourArea(cnt) < MIN_CONTOUR_AREA:
+    # Read chunk from stdout
+    data += pipe.stdout.read(1024*1024)
+    
+    # Try to extract JPEG frame
+    a = data.find(b'\xff\xd8')  # JPEG start
+    b = data.find(b'\xff\xd9')  # JPEG end
+    if a != -1 and b != -1 and b > a:
+        jpg = data[a:b+2]
+        data = data[b+2:]
+        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
             continue
 
-        x, y, w, h = cv2.boundingRect(cnt)
-        roi = frame[y:y+h, x:x+w]
-        img_input = preprocess_roi(roi)
-        if img_input is None:
-            continue
+        frame = cv2.resize(frame, (WIDTH, HEIGHT))
+        output = frame.copy()
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-        try:
+        # Red mask
+        lower_red1 = np.array([0, 120, 70])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 120, 70])
+        upper_red2 = np.array([180, 255, 255])
+        mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for cnt in contours:
+            if cv2.contourArea(cnt) < MIN_CONTOUR_AREA:
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            roi = frame[y:y+h, x:x+w]
+            img_input = preprocess_roi(roi)
+            if img_input is None:
+                continue
+
             preds = predict_tflite(img_input)
             cls_idx = np.argmax(preds)
             confidence = preds[cls_idx]
             label = CLASSES[cls_idx] if confidence >= SEUIL_CONFIANCE else "INCERTAIN"
+            print(f"Detected: {CLASSES[cls_idx]} - Confidence: {confidence*100:.2f}%")
 
-            # Draw on frame
             cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
             cv2.putText(output, f"{label} ({confidence*100:.1f}%)", (x, y-10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-            # PRINT CLASS + PROBABILITY
-            print(f"Detected: {CLASSES[cls_idx]} - Confidence: {confidence*100:.2f}%")
-
-        except Exception as e:
-            print("Prediction error:", e)
-            pass
-
-    if HEADLESS:
-        cv2.imwrite(f"{OUTPUT_FOLDER}/frame_{frame_count:04d}.jpg", output)
-        frame_count += 1
-    else:
         cv2.imshow("TFLite Traffic Sign Detection", output)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-cap.release()
 cv2.destroyAllWindows()
+pipe.terminate()
