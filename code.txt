@@ -1,15 +1,18 @@
-# Dependencies
-sudo apt install -y cmake g++ libboost-dev libdrm-dev \
-    libexpat1-dev libjpeg-dev libtiff5-dev libavcodec-dev \
-    libavformat-dev libswscale-dev python3-pip python3-numpy \
-    python3-opencv git
+# Install dependencies
+sudo apt install -y cmake g++ libboost-dev libdrm-dev libexpat1-dev \
+    libjpeg-dev libtiff5-dev libavcodec-dev libavformat-dev libswscale-dev \
+    python3-pip python3-numpy python3-opencv git
 
-# Clone Picamera2 repo
+# Clone libcamera and picamera2
+git clone https://git.linuxtv.org/libcamera.git
 git clone https://github.com/raspberrypi/picamera2.git
-cd picamera2
 
-# Install Python bindings
+# Build libcamera
+cd libcamera
+meson build
+ninja -C build
+sudo ninja -C build install
+
+# Build Picamera2 Python bindings
+cd ../picamera2
 pip3 install .
-
-# Test
-python3 -c "from picamera2 import Picamera2; print('Picamera2 works')"
