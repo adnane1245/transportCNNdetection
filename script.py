@@ -2,23 +2,18 @@ import cv2
 import numpy as np
 from PIL import Image
 import tflite_runtime.interpreter as tflite
-import os
-import matplotlib.pyplot as plt
+import subprocess
 
 # ===============================
 # CONFIG
 # ===============================
-MODEL_PATH = "speedtraficdetectionmodel_6classes_fp16.tflite"
+MODEL_PATH = "speedtraficdetectionmodel_6classes.tflite"
 IMG_SIZE = 30
 SEUIL_CONFIANCE = 0.90
 CLASSES = ['20', '30', '50', '60', '70', 'STOP']
 
 # Camera resolution
 WIDTH, HEIGHT = 320, 240
-
-# Output folder if headless
-OUTPUT_FOLDER = "frames"
-os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
 # ===============================
 # LOAD TFLITE MODEL
@@ -47,78 +42,73 @@ def predict_tflite(img_input):
     return interpreter.get_tensor(output_details[0]['index'])[0]
 
 # ===============================
-# CAMERA INIT
+# LIBCAMERA-VID INIT
 # ===============================
-cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
+command = [
+    "libcamera-vid",
+    "-t", "0",             # run indefinitely
+    "--inline",
+    "--codec", "mjpeg",    # MJPEG output
+    "-o", "-"              # output to stdout
+]
 
-if not cap.isOpened():
-    print("❌ Cannot open camera")
-    exit()
+pipe = subprocess.Popen(command, stdout=subprocess.PIPE, bufsize=10**8)
 
-# Check if DISPLAY is available for cv2.imshow()
-HEADLESS = "DISPLAY" not in os.environ
-if HEADLESS:
-    print("⚠ Headless mode detected — frames will be saved instead of shown")
-    plt.ion()
-    fig, ax = plt.subplots()
-    im = ax.imshow(np.zeros((HEIGHT, WIDTH, 3), dtype=np.uint8))
-
-else:
-    print(f"🎥 Camera active — resolution {WIDTH}x{HEIGHT} — Press Q to quit")
+print("🎥 Camera active — Press Q to quit")
 
 # ===============================
 # CAMERA LOOP
 # ===============================
-frame_count = 0
+data = b''
 while True:
-    ret, frame = cap.read()
-    if not ret:
-        continue
+    # Read some bytes from stdout
+    data += pipe.stdout.read(1024*1024)
 
-    output = frame.copy()
-    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-
-    # Red mask
-    lower_red1 = np.array([0, 120, 70])
-    upper_red1 = np.array([10, 255, 255])
-    lower_red2 = np.array([170, 120, 70])
-    upper_red2 = np.array([180, 255, 255])
-    mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
-
-    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    for cnt in contours:
-        if cv2.contourArea(cnt) < 500:
+    # Try to decode MJPEG frame
+    a = data.find(b'\xff\xd8')  # JPEG start
+    b = data.find(b'\xff\xd9')  # JPEG end
+    if a != -1 and b != -1:
+        jpg = data[a:b+2]
+        data = data[b+2:]
+        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        if frame is None:
             continue
-        x, y, w, h = cv2.boundingRect(cnt)
-        roi = frame[y:y+h, x:x+w]
 
-        try:
-            img_input = preprocess_roi(roi)
-            preds = predict_tflite(img_input)
-            cls_idx = np.argmax(preds)
-            confidence = preds[cls_idx]
-            label = CLASSES[cls_idx] if confidence >= SEUIL_CONFIANCE else "INCERTAIN"
+        frame = cv2.resize(frame, (WIDTH, HEIGHT))
+        output = frame.copy()
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-            cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
-            cv2.putText(output, f"{label} ({confidence*100:.1f}%)", (x, y-10),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        except:
-            pass
+        # Red mask
+        lower_red1 = np.array([0, 120, 70])
+        upper_red1 = np.array([10, 255, 255])
+        lower_red2 = np.array([170, 120, 70])
+        upper_red2 = np.array([180, 255, 255])
 
-    if HEADLESS:
-        # Save frame
-        cv2.imwrite(f"{OUTPUT_FOLDER}/frame_{frame_count:04d}.jpg", output)
-        frame_count += 1
-        # Optional: display in matplotlib
-        im.set_data(cv2.cvtColor(output, cv2.COLOR_BGR2RGB))
-        plt.pause(0.001)
-    else:
+        mask = cv2.inRange(hsv, lower_red1, upper_red1) + cv2.inRange(hsv, lower_red2, upper_red2)
+        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        for cnt in contours:
+            if cv2.contourArea(cnt) < 500:
+                continue
+            x, y, w, h = cv2.boundingRect(cnt)
+            roi = frame[y:y+h, x:x+w]
+
+            try:
+                img_input = preprocess_roi(roi)
+                preds = predict_tflite(img_input)
+                cls_idx = np.argmax(preds)
+                confidence = preds[cls_idx]
+                label = CLASSES[cls_idx] if confidence >= SEUIL_CONFIANCE else "INCERTAIN"
+
+                cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
+                cv2.putText(output, f"{label} ({confidence*100:.1f}%)", (x, y-10),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            except:
+                pass
+
         cv2.imshow("TFLite Traffic Sign Detection", output)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
 
-cap.release()
 cv2.destroyAllWindows()
+pipe.terminate()
