@@ -12,13 +12,8 @@ IMG_SIZE = 30
 SEUIL_CONFIANCE = 0.90
 CLASSES = ['20', '30', '50', '60', '70', 'STOP']
 
-# Camera resolution (smaller for 1GB Pi)
 WIDTH, HEIGHT = 320, 240
-
-# Minimum contour area for detection (dynamic)
-MIN_CONTOUR_AREA = 100  # small, so small signs are detected
-
-# Output folder if headless
+MIN_CONTOUR_AREA = 100
 OUTPUT_FOLDER = "frames"
 os.makedirs(OUTPUT_FOLDER, exist_ok=True)
 
@@ -52,7 +47,7 @@ def predict_tflite(img_input):
     return preds
 
 # ===============================
-# CAMERA INIT (V4L2 CSI CAMERA)
+# CAMERA INIT
 # ===============================
 cap = cv2.VideoCapture(0, cv2.CAP_V4L2)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
@@ -80,7 +75,7 @@ while True:
     output = frame.copy()
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
-    # Red mask (for traffic signs)
+    # Red mask for traffic signs
     lower_red1 = np.array([0, 120, 70])
     upper_red1 = np.array([10, 255, 255])
     lower_red2 = np.array([170, 120, 70])
@@ -105,10 +100,16 @@ while True:
             confidence = preds[cls_idx]
             label = CLASSES[cls_idx] if confidence >= SEUIL_CONFIANCE else "INCERTAIN"
 
+            # Draw on frame
             cv2.rectangle(output, (x, y), (x+w, y+h), (0, 255, 0), 2)
             cv2.putText(output, f"{label} ({confidence*100:.1f}%)", (x, y-10),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+
+            # PRINT CLASS + PROBABILITY
+            print(f"Detected: {CLASSES[cls_idx]} - Confidence: {confidence*100:.2f}%")
+
         except Exception as e:
+            print("Prediction error:", e)
             pass
 
     if HEADLESS:
